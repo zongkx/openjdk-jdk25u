@@ -34,7 +34,6 @@ on:
       platforms:
         description: 'Platform(s) to execute on (comma separated, e.g. "windows-x64")'
         required: true
-        # 默认修改为仅构建 windows-x64，避免点太快浪费不必要的资源
         default: 'windows-x64'
       configure-arguments:
         description: 'Additional configure arguments'
@@ -88,19 +87,25 @@ jobs:
 
       - name: 'Check what jobs to run'
         id: include
+        # 将有冲突的动态表达式提炼到 env 上下文中，转为纯净的系统环境变量
+        env:
+          INPUT_PLATFORMS: ${{ github.event.inputs.platforms }}
+          SUBMIT_FILTER_IS_SET: ${{ !secrets.JDK_SUBMIT_FILTER || startsWith(github.ref, 'refs/heads/submit/') }}
+          SUBMIT_PLATFORMS: ${{ secrets.JDK_SUBMIT_PLATFORMS }}
+          INPUT_DRY_RUN: ${{ github.event.inputs.dry-run }}
         run: |
           IFS=',' read -r -a excluded_array <<< "$EXCLUDED_PLATFORMS"
 
           function check_platform() {
             if [[ $GITHUB_EVENT_NAME == workflow_dispatch ]]; then
-              input='${{ github.event.inputs.platforms }}'
+              input="$INPUT_PLATFORMS"
             elif [[ $GITHUB_EVENT_NAME == push ]]; then
-              if [[ '${{ !secrets.JDK_SUBMIT_FILTER || startsWith(github.ref, 'refs/heads/submit/') }}' == 'false' ]]; then
+              if [[ "$SUBMIT_FILTER_IS_SET" == "false" ]]; then
                 >&2 echo 'JDK_SUBMIT_FILTER is set and not a "submit/" branch'
                 echo 'false'
                 return
               else
-                input='${{ secrets.JDK_SUBMIT_PLATFORMS }}'
+                input="$SUBMIT_PLATFORMS"
               fi
             fi
 
@@ -135,11 +140,9 @@ jobs:
 
           function check_dry_run() {
             if [[ $GITHUB_EVENT_NAME == workflow_dispatch ]]; then
-              echo '${{ github.event.inputs.dry-run }}'
+              echo "$INPUT_DRY_RUN"
               return
             elif [[ $GITHUB_EVENT_NAME == push ]]; then
-              # 在你自己的 fork 仓库中，为了能够直接生成产物，
-              # 我们将原来的 master/jdk 分支默认 dry-run=true 逻辑关闭，统一走 false 以确保真正执行编译
               echo 'false'
               return
             fi
@@ -320,4 +323,38 @@ jobs:
       runs-on: windows-2022
       msvc-toolset-version: '14.44'
       msvc-toolset-architecture: 'x86.x64'
-      configure-arguments: ${{ github.event.
+      configure-arguments: ${{ github.event.inputs.configure-arguments }}
+      make-arguments: ${{ github.event.inputs.make-arguments }}
+      dry-run: ${{ needs.prepare.outputs.dry-run == 'true' }}
+    if: needs.prepare.outputs.windows-x64 == 'true'
+
+  build-windows-aarch64:
+    name: windows-aarch64
+    needs: prepare
+    uses: ./.github/workflows/build-windows.yml
+    with:
+      platform: windows-aarch64
+      runs-on: windows-2022
+      msvc-toolset-version: '14.44'
+      msvc-toolset-architecture: 'arm64'
+      make-target: 'hotspot'
+      extra-conf-options: '--openjdk-target=aarch64-unknown-cygwin'
+      configure-arguments: ${{ github.event.inputs.configure-arguments }}
+      make-arguments: ${{ github.event.inputs.make-arguments }}
+      dry-run: ${{ needs.prepare.outputs.dry-run == 'true' }}
+    if: needs.prepare.outputs.windows-aarch64 == 'true'
+
+  build-docs:
+    name: docs
+    needs: prepare
+    uses: ./.github/workflows/build-linux.yml
+    with:
+      platform: linux-x64
+      debug-levels: '[ "debug" ]'
+      make-target: 'docs-jdk-bundles'
+      extra-conf-options: '--disable-full-docs'
+      gcc-major-version: '10'
+      configure-arguments: ${{ github.event.inputs.configure-arguments }}
+      make-arguments: ${{ github.event.inputs.make-arguments }}
+      dry-run: ${{ needs.prepare.outputs.dry-run == 'true' }}
+    if: needs.prepare.outputs.docs == 'true'
