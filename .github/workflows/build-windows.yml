@@ -125,7 +125,74 @@ jobs:
             modify --quiet --installPath 'C:\Program Files\Microsoft Visual Studio\2022\Enterprise' \
             --add Microsoft.VisualStudio.Component.VC.${{ inputs.msvc-toolset-version }}.${{ inputs.msvc-toolset-architecture }}
         if: steps.toolchain-check.outputs.toolchain-installed != 'true'
+- name: 'Install toolchain and dependencies'
+        run: |
+          # Run Visual Studio Installer
+          '/c/Program Files (x86)/Microsoft Visual Studio/Installer/vs_installer.exe' \
+            modify --quiet --installPath 'C:\Program Files\Microsoft Visual Studio\2022\Enterprise' \
+            --add Microsoft.VisualStudio.Component.VC.${{ inputs.msvc-toolset-version }}.${{ inputs.msvc-toolset-architecture }}
+        if: steps.toolchain-check.outputs.toolchain-installed != 'true'
 
+      - name: 'Ensure MSYS2 GNU make is used'
+        id: ensure-make
+        shell: bash
+        run: |
+          echo "==== debug: initial PATH ===="
+          echo "$PATH"
+          echo "==== debug: which -a make ===="
+          which -a make || true
+
+          echo "---- versions for each make found ----"
+          for p in $(which -a make 2>/dev/null || true); do
+            echo "== $p =="
+            "$p" --version 2>&1 | sed -n '1,3p' || true
+          done
+
+          if [ -x "/c/msys64/usr/bin/make" ]; then
+            echo "Found MSYS2 make at /c/msys64/usr/bin/make"
+            export PATH="/c/msys64/usr/bin:$PATH"
+            export MAKE="/c/msys64/usr/bin/make"
+            echo "C:\\msys64\\usr\\bin" >> $GITHUB_PATH
+            echo "MAKE=C:\\msys64\\usr\\bin\\make" >> $GITHUB_ENV
+          else
+            echo "MSYS2 make not found at /c/msys64/usr/bin; attempting to install via pacman"
+            if command -v /usr/bin/pacman >/dev/null 2>&1; then
+              /usr/bin/pacman -Sy --noconfirm || true
+              /usr/bin/pacman -S --noconfirm make || true
+              export PATH="/usr/bin:$PATH"
+              export MAKE="/usr/bin/make"
+              echo "C:\\msys64\\usr\\bin" >> $GITHUB_PATH
+              echo "MAKE=C:\\msys64\\usr\\bin\\make" >> $GITHUB_ENV
+            else
+              echo "pacman not found; skipping installation. Ensure MSYS2 is initialized."
+            fi
+          fi
+
+          echo "==== final which make ===="
+          which make || true
+          "$MAKE" --version || true
+
+      - name: 'Configure'
+        run: >
+          bash configure
+          --with-conf-name=${{ inputs.platform }}
+          ${{ matrix.flags }}
+          --with-version-opt=${GITHUB_ACTOR}-${GITHUB_SHA}
+          --with-boot-jdk=${{ steps.bootjdk.outputs.path }}
+          --with-jtreg=${{ steps.jtreg.outputs.path }}
+          --with-gtest=${{ steps.gtest.outputs.path }}
+          --with-msvc-toolset-version=${{ inputs.msvc-toolset-version }}
+          --with-jmod-compress=zip-1
+          ${{ inputs.extra-conf-options }} ${{ inputs.configure-arguments }} || (
+          echo "Dumping config.log:" &&
+          cat config.log &&
+          exit 1)
+        env:
+          # We need a minimal PATH on Windows
+          # Set PATH to "", so just GITHUB_PATH is included
+          PATH: ''
+        shell: env /usr/bin/bash --login -eo pipefail {0}
+        if: ${{ inputs.dry-run == false }}
       - name: 'Configure'
         run: >
           bash configure
