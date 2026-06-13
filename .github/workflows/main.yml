@@ -32,9 +32,9 @@ on:
   workflow_dispatch:
     inputs:
       platforms:
-        description: 'Platform(s) to execute on (comma separated, e.g. "windows-x64")'
+        description: 'Platform(s) to execute on (comma separated, e.g. "linux-x64, macos, aarch64")'
         required: true
-        default: 'windows-x64'
+        default: 'linux-x64, linux-x64-variants, linux-cross-compile, alpine-linux-x64, macos-x64, macos-aarch64, windows-x64, windows-aarch64, docs'
       configure-arguments:
         description: 'Additional configure arguments'
         required: false
@@ -44,7 +44,6 @@ on:
       dry-run:
         description: 'Dry run: skip actual builds and tests'
         required: false
-        default: 'false'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -60,6 +59,7 @@ jobs:
     name: 'Prepare the run'
     runs-on: ubuntu-24.04
     env:
+      # List of platforms to exclude by default
       EXCLUDED_PLATFORMS: 'alpine-linux-x64'
     outputs:
       linux-x64: ${{ steps.include.outputs.linux-x64 }}
@@ -81,36 +81,38 @@ jobs:
             .github
             make/conf/github-actions.conf
 
-      - name: 'Build JTReg'
-        id: jtreg
-        uses: ./.github/actions/build-jtreg
 
+      # TODO: Now that we are checking out the repo scripts, we can put the following code
+      # into a separate file
       - name: 'Check what jobs to run'
         id: include
-        # 将有冲突的动态表达式提炼到 env 上下文中，转为纯净的系统环境变量
-        env:
-          INPUT_PLATFORMS: ${{ github.event.inputs.platforms }}
-          SUBMIT_FILTER_IS_SET: ${{ !secrets.JDK_SUBMIT_FILTER || startsWith(github.ref, 'refs/heads/submit/') }}
-          SUBMIT_PLATFORMS: ${{ secrets.JDK_SUBMIT_PLATFORMS }}
-          INPUT_DRY_RUN: ${{ github.event.inputs.dry-run }}
         run: |
+          # Determine which platform jobs to run
+
+          # Returns 'true' if the input platform list matches any of the platform monikers given as argument,
+          # 'false' otherwise.
+          # arg $1: platform name or names to look for
+
+          # Convert EXCLUDED_PLATFORMS from a comma-separated string to an array
           IFS=',' read -r -a excluded_array <<< "$EXCLUDED_PLATFORMS"
 
           function check_platform() {
             if [[ $GITHUB_EVENT_NAME == workflow_dispatch ]]; then
-              input="$INPUT_PLATFORMS"
+              input='${{ github.event.inputs.platforms }}'
             elif [[ $GITHUB_EVENT_NAME == push ]]; then
-              if [[ "$SUBMIT_FILTER_IS_SET" == "false" ]]; then
+              if [[ '${{ !secrets.JDK_SUBMIT_FILTER || startsWith(github.ref, 'refs/heads/submit/') }}' == 'false' ]]; then
+                # If JDK_SUBMIT_FILTER is set, and this is not a "submit/" branch, don't run anything
                 >&2 echo 'JDK_SUBMIT_FILTER is set and not a "submit/" branch'
                 echo 'false'
                 return
               else
-                input="$SUBMIT_PLATFORMS"
+                input='${{ secrets.JDK_SUBMIT_PLATFORMS }}'
               fi
             fi
 
             normalized_input="$(echo ,$input, | tr -d ' ')"
             if [[ "$normalized_input" == ",," ]]; then
+              # For an empty input, assume all platforms should run, except those in the EXCLUDED_PLATFORMS list
               for excluded in "${excluded_array[@]}"; do
                 if [[ "$1" == "$excluded" ]]; then
                   echo 'false'
@@ -120,6 +122,7 @@ jobs:
               echo 'true'
               return
             else
+              # Check for all acceptable platform names
               for part in $* ; do
                 if echo "$normalized_input" | grep -q -e ",$part," ; then
                   echo 'true'
@@ -127,6 +130,7 @@ jobs:
                 fi
               done
 
+              # If not explicitly included, check against the EXCLUDED_PLATFORMS list
               for excluded in "${excluded_array[@]}"; do
                 if [[ "$1" == "$excluded" ]]; then
                   echo 'false'
@@ -140,12 +144,30 @@ jobs:
 
           function check_dry_run() {
             if [[ $GITHUB_EVENT_NAME == workflow_dispatch ]]; then
-              echo "$INPUT_DRY_RUN"
+              # Take the user-specified one.
+              echo '${{ github.event.inputs.dry-run }}'
               return
             elif [[ $GITHUB_EVENT_NAME == push ]]; then
-              echo 'false'
-              return
+              # Cut out the real branch name
+              BRANCH=${GITHUB_REF##*/}
+
+              # Dry run rebuilds the caches in current branch, so they can be reused
+              # for any child PR branches. Because of this, we want to trigger this
+              # workflow in master branch, so that actual PR branches can use the cache.
+              # This workflow would trigger every time contributors sync their master
+              # branches in their personal forks.
+              if [[ $BRANCH == "master" ]]; then
+                echo 'true'
+                return
+              fi
+
+              # ...same for stabilization branches
+              if [[ $BRANCH =~ "jdk(.*)" ]]; then
+                echo 'true'
+                return
+              fi
             fi
+
             echo 'false'
           }
 
@@ -228,6 +250,7 @@ jobs:
     with:
       platform: linux-x64
       make-target: 'hotspot'
+      # Technically this is not the "debug" level, but we can't inject a new matrix state for just this job
       debug-levels: '[ "debug" ]'
       gcc-major-version: '10'
       extra-conf-options: '--with-debug-level=optimized --disable-precompiled-headers'
@@ -243,6 +266,8 @@ jobs:
     with:
       platform: linux-x64
       make-target: 'static-jdk-bundles'
+      # There are issues with fastdebug static build in GHA due to space limit.
+      # Only do release build for now.
       debug-levels: '[ "release" ]'
       gcc-major-version: '10'
       configure-arguments: ${{ github.event.inputs.configure-arguments }}
@@ -258,11 +283,16 @@ jobs:
     with:
       platform: linux-x64
       make-target: 'static-libs-bundles'
+      # Only build static-libs-bundles for release builds.
+      # For debug builds, building static-libs often exceeds disk space.
       debug-levels: '[ "release" ]'
       gcc-major-version: '10'
       configure-arguments: ${{ github.event.inputs.configure-arguments }}
       make-arguments: ${{ github.event.inputs.make-arguments }}
       dry-run: ${{ needs.prepare.outputs.dry-run == 'true' }}
+      # Upload static libs bundles separately to avoid interference with normal linux-x64 bundle.
+      # This bundle is not used by testing jobs, but downstreams use it to check that
+      # dependent projects, e.g. libgraal, builds fine.
       bundle-suffix: "-static-libs"
     if: needs.prepare.outputs.linux-x64-variants == 'true'
 
@@ -352,9 +382,13 @@ jobs:
       platform: linux-x64
       debug-levels: '[ "debug" ]'
       make-target: 'docs-jdk-bundles'
+      # Make sure we never try to make full docs, since that would require a
+      # build JDK, and we do not need the additional testing of the graphs.
       extra-conf-options: '--disable-full-docs'
       gcc-major-version: '10'
       configure-arguments: ${{ github.event.inputs.configure-arguments }}
       make-arguments: ${{ github.event.inputs.make-arguments }}
       dry-run: ${{ needs.prepare.outputs.dry-run == 'true' }}
     if: needs.prepare.outputs.docs == 'true'
+
+ 
