@@ -164,7 +164,11 @@ jobs:
           echo "==== final which make ===="
           which make || true
           "$MAKE" --version || true
-
+      - name: 'Patch configure script for MSYS2 Make 4.4.1 bug'
+        run: |
+          # 将强制要求匹配 msys 的正则替换为匹配任意字符，从而绕过校验
+          sed -i 's/built for .*-pc-msys/built for .*/g' configure
+        shell: bash
       - name: 'Configure'
         run: >
           bash configure
