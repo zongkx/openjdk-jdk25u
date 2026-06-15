@@ -164,14 +164,16 @@ jobs:
           echo "==== final which make ===="
           which make || true
           "$MAKE" --version || true
-      - name: 'Patch configure script for MSYS2 Make 4.4.1 bug'
+      - name: 'Patch autoconf script for MSYS2 Make 4.4.1 bug'
         run: |
-          # 将强制要求匹配 msys 的正则替换为匹配任意字符，从而绕过校验
-          sed -i 's/built for .*-pc-msys/built for .*/g' configure
+          # 针对 JDK 25+，必须修改生成 configure 的 .m4 宏文件源头
+          # 将针对 msys 的正则校验替换为兼容 cygwin (因为 Make 4.4.1 自称是 cygwin)
+          sed -i 's/-pc-msys/-pc-cygwin/g' make/autoconf/basic_tools.m4
         shell: bash
+
       - name: 'Configure'
         run: >
-          bash configure
+          CONFIG_SITE=/dev/null bash configure
           MAKE=/c/msys64/usr/bin/make
           --with-conf-name=${{ inputs.platform }}
           ${{ matrix.flags }}
@@ -187,8 +189,6 @@ jobs:
           exit 1)
         env:
           PATH: ''
-          # 🟢 关键点：屏蔽 MSYS2 默认环境注入，阻止其强制修改 target 为 mingw32 导致自杀
-          CONFIG_SITE: '/dev/null'
         shell: env /usr/bin/bash --login -eo pipefail {0}
         if: ${{ inputs.dry-run == false }}
   
