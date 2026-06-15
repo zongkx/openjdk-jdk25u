@@ -168,6 +168,7 @@ jobs:
       - name: 'Configure'
         run: >
           bash configure
+          MAKE=/c/msys64/usr/bin/make
           --with-conf-name=${{ inputs.platform }}
           ${{ matrix.flags }}
           --with-version-opt=${GITHUB_ACTOR}-${GITHUB_SHA}
@@ -181,14 +182,12 @@ jobs:
           cat config.log &&
           exit 1)
         env:
-          # We need a minimal PATH on Windows
-          # Set PATH to "", so just GITHUB_PATH is included
           PATH: ''
           # 🟢 关键点：屏蔽 MSYS2 默认环境注入，阻止其强制修改 target 为 mingw32 导致自杀
           CONFIG_SITE: '/dev/null'
         shell: env /usr/bin/bash --login -eo pipefail {0}
         if: ${{ inputs.dry-run == false }}
-
+  
       - name: 'Build'
         id: build
         uses: ./.github/actions/do-build
